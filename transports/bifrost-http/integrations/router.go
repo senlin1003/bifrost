@@ -3434,8 +3434,15 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		// same treatment the non-passthrough OAuth path already gets. Dropping it made
 		// every passthrough request ask the upstream for identity, costing bandwidth on
 		// the gateway-to-provider hop for no protocol reason.
+		// x-request-id is dropped because the tracing middleware injects one into the
+		// inbound request headers when the caller did not supply it, and passthrough
+		// would then forward Bifrost's own correlation id to the provider. The caller
+		// never asked for that, and it makes a passthrough request distinguishable from
+		// a direct one. Internal correlation is unaffected: logging and tracing read the
+		// id from the request context, not from what is sent upstream.
 		case "api-key", "x-api-key", "x-goog-api-key",
-			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization":
+			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization",
+			"x-request-id":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {
 				return true // drop internal gateway headers
