@@ -136,10 +136,20 @@ func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
-// is set only for Claude Code OAuth passthrough, where the caller's token is the upstream
-// credential — and only the Anthropic provider forwards it.
+// is set for OAuth passthrough where the caller's own token is the upstream credential:
+// Claude Code against Anthropic, and Codex/ChatGPT against OpenAI (chatgpt.com's
+// backend-api/codex, gated the same way in integrations/router.go's
+// applyPassthroughCallerAuth — isJWTBearer only recognizes a 3-segment JWT there, so a
+// plain "Bearer sk-..." API key still falls through to normal key selection).
+//
+// Before this OpenAI now shared this codepath with every other passthrough call: even
+// though isJWTBearer correctly told applyPassthroughCallerAuth to forward the caller's
+// real ChatGPT OAuth token, this gate silently discarded that decision and fell back to
+// the provider's own configured key — which chatgpt.com's backend-api rejects outright
+// ("API keys are not supported by this endpoint"), because that endpoint only accepts a
+// ChatGPT account's own OAuth bearer, never a static API key.
 func isKeySkippingAllowed(baseProvider schemas.ModelProvider) bool {
-	return baseProvider == schemas.Anthropic
+	return baseProvider == schemas.Anthropic || baseProvider == schemas.OpenAI
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.

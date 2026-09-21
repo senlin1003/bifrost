@@ -515,3 +515,29 @@ func TestWaitRetryBackoffReportsCancellationAtTimerExpiry(t *testing.T) {
 		}
 	}
 }
+
+// TestIsKeySkippingAllowed covers the gate that decides whether SkipKeySelection
+// (set by applyPassthroughCallerAuth for an OAuth-shaped caller token) actually takes
+// effect. Anthropic and OpenAI are the two passthrough routes that forward a caller's
+// own OAuth bearer 1:1 (Claude Code against api.anthropic.com, Codex/ChatGPT against
+// chatgpt.com's backend-api) — every other provider must keep using its own configured
+// key, since SkipKeySelection there would send an empty key pool to a provider that
+// never authenticates via a caller-supplied OAuth bearer.
+func TestIsKeySkippingAllowed(t *testing.T) {
+	tests := []struct {
+		provider schemas.ModelProvider
+		want     bool
+	}{
+		{schemas.Anthropic, true},
+		{schemas.OpenAI, true},
+		{schemas.Bedrock, false},
+		{schemas.Vertex, false},
+		{schemas.Azure, false},
+		{schemas.Gemini, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			assert.Equal(t, tt.want, isKeySkippingAllowed(tt.provider))
+		})
+	}
+}
