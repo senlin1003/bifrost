@@ -58,6 +58,16 @@ func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
 }
 
+func TestChatGPTUpstreamURLDefaultsToChatGPT(t *testing.T) {
+	t.Setenv(ChatGPTUpstreamEnv, "")
+	assert.Equal(t, "https://chatgpt.com", chatGPTUpstreamURL())
+}
+
+func TestChatGPTUpstreamURLHonoursDiagnosticOverride(t *testing.T) {
+	t.Setenv(ChatGPTUpstreamEnv, " http://127.0.0.1:8936/ ")
+	assert.Equal(t, "http://127.0.0.1:8936", chatGPTUpstreamURL())
+}
+
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
 	r := router.New()
 	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
