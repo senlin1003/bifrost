@@ -835,13 +835,9 @@ func HandleAnthropicChatCompletionStreaming(
 		}
 	}
 
-	// Close the connection after this streaming response instead of returning it to
-	// the keep-alive pool. fasthttp can otherwise reuse a streaming connection whose
-	// reader is still in a torn state (body not fully drained, or the idle-timeout/
-	// consumer goroutine still attached), corrupting the next request's RoundTrip and
-	// panicking with "slice bounds out of range" in mustPeekBuffered. Mirrors the
-	// mitigation already used on Gemini/Azure/OpenAI streaming and anthropic.go:2716.
-	req.Header.Set("Connection", "close")
+	// Keep normal responses reusable. ReleaseStreamingResponse abandons cancelled
+	// or half-read streams instead of returning those connections to the pool.
+	req.Header.Set("Connection", "keep-alive")
 
 	// Use a fresh streaming client per request so fasthttp's internal readerPool
 	// cannot be poisoned across concurrent Anthropic streams by a non-idempotent
@@ -1503,13 +1499,9 @@ func HandleAnthropicResponsesStream(
 		}
 	}
 
-	// Close the connection after this streaming response instead of returning it to
-	// the keep-alive pool. fasthttp can otherwise reuse a streaming connection whose
-	// reader is still in a torn state (body not fully drained, or the idle-timeout/
-	// consumer goroutine still attached), corrupting the next request's RoundTrip and
-	// panicking with "slice bounds out of range" in mustPeekBuffered. Mirrors the
-	// mitigation already used on Gemini/Azure/OpenAI streaming and anthropic.go:2716.
-	req.Header.Set("Connection", "close")
+	// Keep normal responses reusable. ReleaseStreamingResponse abandons cancelled
+	// or half-read streams instead of returning those connections to the pool.
+	req.Header.Set("Connection", "keep-alive")
 
 	// Use a fresh streaming client per request so fasthttp's internal readerPool
 	// cannot be poisoned across concurrent Anthropic streams by a non-idempotent
@@ -3218,7 +3210,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.Header.Set("Connection", "close")
+	fasthttpReq.Header.Set("Connection", "keep-alive")
 
 	if key.Value.GetValue() != "" {
 		fasthttpReq.Header.Set("x-api-key", key.Value.GetValue())

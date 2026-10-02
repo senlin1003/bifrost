@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1757,5 +1758,85 @@ func TestChatStreamRawCaptureIsBoundedByBytes(t *testing.T) {
 	const limit = (1 << 20) + (8 << 10)
 	if capturedBytes > limit {
 		t.Errorf("captured raw response is %d bytes, above the %d byte ceiling; an upstream streaming non-forwarding frames can grow this without bound", capturedBytes, limit)
+	}
+}
+
+// 验收: FWD-66-A1~ FWD-66-A2
+func TestPassthroughStreamKeepAliveAndCancel(t *testing.T) {
+	var mu sync.Mutex
+	var headers, addresses []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		h := r.Header.Get("Connection")
+		if r.Close {
+			h = "close"
+		}
+		headers = append(headers, h)
+		addresses = append(addresses, r.RemoteAddr)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"run\":\"" + r.URL.Query().Get("run") + "\"}\n\n"))
+		w.(http.Flusher).Flush()
+		if r.URL.Query().Get("run") == "cancel" {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Second):
+			}
+			return
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+	provider := newStreamTestProvider(server.URL)
+	run := func(id string, cancelStream bool) {
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ctx := schemas.NewBifrostContext(parent, time.Time{})
+		ch, err := provider.PassthroughStream(ctx, passthroughPostHook, nil, schemas.Key{}, &schemas.BifrostPassthroughRequest{
+			Method: "POST", Path: "/fwd66", RawQuery: "run=" + id, Body: []byte(`{}`), SafeHeaders: map[string]string{"Connection": "keep-alive"},
+		})
+		if err != nil {
+			t.Fatalf("%s start: %+v", id, err)
+		}
+		if cancelStream {
+			cancel()
+		}
+		chunks := collectChunks(t, ch)
+		if !cancelStream {
+			var body strings.Builder
+			for _, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("%s stream: %+v", id, c.BifrostError)
+				}
+				if c.BifrostPassthroughResponse != nil {
+					body.Write(c.BifrostPassthroughResponse.Body)
+				}
+			}
+			if !strings.Contains(body.String(), `"run":"`+id+`"`) || strings.Contains(body.String(), `"run":"cancel"`) {
+				t.Fatalf("%s wrong stream: %s", id, body.String())
+			}
+		}
+	}
+	for _, id := range []string{"first", "second", "third"} {
+		run(id, false)
+	}
+	run("cancel", true)
+	run("after-cancel", false)
+	mu.Lock()
+	defer mu.Unlock()
+	for i, h := range headers {
+		if h != "keep-alive" {
+			t.Errorf("request %d Connection=%q, want keep-alive", i, h)
+		}
+	}
+	if len(addresses) != 5 {
+		t.Fatalf("got %d upstream requests", len(addresses))
+	}
+	if addresses[0] != addresses[1] || addresses[1] != addresses[2] {
+		t.Errorf("completed streams did not reuse connection: %v", addresses[:3])
+	}
+	if addresses[3] == addresses[4] {
+		t.Error("cancelled half-read connection reused")
 	}
 }

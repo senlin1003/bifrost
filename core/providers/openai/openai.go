@@ -8226,7 +8226,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.Header.Set("Connection", "close")
+	fasthttpReq.Header.Set("Connection", "keep-alive")
 
 	if key.Value.GetValue() != "" {
 		fasthttpReq.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
