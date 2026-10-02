@@ -3505,6 +3505,12 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	provider = getProviderFromHeader(ctx, provider)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
 	isStreaming := strings.Contains(strings.ToLower(path), "stream") || bodyStream
+	if isChatGPTBackgroundRequest(string(ctx.Method()), string(ctx.Path())) {
+		// A model or stream flag inside telemetry/settings is data, not an LLM
+		// invocation. Preserve the bytes while skipping inference accounting.
+		resolvedModel = ""
+		isStreaming = false
+	}
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      string(ctx.Method()),
