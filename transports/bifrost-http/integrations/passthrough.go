@@ -1,6 +1,9 @@
 package integrations
 
 import (
+	"os"
+	"strings"
+
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -55,7 +58,7 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:    schemas.OpenAI,
-		UpstreamURL: "https://chatgpt.com",
+		UpstreamURL: chatGPTUpstreamURL(),
 		StripPrefix: []string{
 			"/chatgpt_passthrough",
 		},
@@ -63,6 +66,21 @@ func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
 		},
 	})
+}
+
+// ChatGPTUpstreamEnv overrides the /chatgpt_passthrough upstream (default https://chatgpt.com).
+// It exists only for diagnostics: pointing it at a local plaintext recorder lets us capture
+// exactly what Bifrost sends upstream and what ChatGPT returns, without trusting a MITM CA.
+// Leave it unset in normal operation.
+const ChatGPTUpstreamEnv = "BIFROST_CHATGPT_PASSTHROUGH_UPSTREAM"
+
+const defaultChatGPTUpstream = "https://chatgpt.com"
+
+func chatGPTUpstreamURL() string {
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv(ChatGPTUpstreamEnv)), "/"); v != "" {
+		return v
+	}
+	return defaultChatGPTUpstream
 }
 
 // NewAzurePassthroughRouter creates a passthrough router for /azure_passthrough.

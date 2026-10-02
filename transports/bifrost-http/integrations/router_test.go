@@ -58,6 +58,16 @@ func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
 }
 
+func TestChatGPTUpstreamURLDefaultsToChatGPT(t *testing.T) {
+	t.Setenv(ChatGPTUpstreamEnv, "")
+	assert.Equal(t, "https://chatgpt.com", chatGPTUpstreamURL())
+}
+
+func TestChatGPTUpstreamURLHonoursDiagnosticOverride(t *testing.T) {
+	t.Setenv(ChatGPTUpstreamEnv, " http://127.0.0.1:8936/ ")
+	assert.Equal(t, "http://127.0.0.1:8936", chatGPTUpstreamURL())
+}
+
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
 	r := router.New()
 	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
@@ -907,6 +917,19 @@ func TestApplyPassthroughCallerAuth_OpenAIJWTForwarded(t *testing.T) {
 	}
 }
 
+func TestApplyPassthroughCallerAuth_LoopbackHTTPOverrideForwardsJWT(t *testing.T) {
+	jwt := "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln"
+	for _, upstream := range []string{"http://127.0.0.1:8936", "http://localhost:8936", "http://[::1]:8936"} {
+		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		safeHeaders := map[string]string{}
+		applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.OpenAI, jwt, upstream)
+		cancel()
+		if got := safeHeaders["authorization"]; got != jwt {
+			t.Fatalf("%s: expected JWT forwarded to loopback recorder, got %q", upstream, got)
+		}
+	}
+}
+
 func TestApplyPassthroughCallerAuth_APIKeysStayStripped(t *testing.T) {
 	for name, tc := range map[string]struct {
 		provider    schemas.ModelProvider
@@ -918,6 +941,7 @@ func TestApplyPassthroughCallerAuth_APIKeysStayStripped(t *testing.T) {
 		"provider override bedrock": {schemas.Bedrock, "Bearer sk-ant-oat01-caller-token", ""},
 		"openai two-segment token":  {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.c2ln", ""},
 		"http upstream override":    {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "http://mock.local"},
+		"http lookalike host":       {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "http://127.0.0.1.evil.example"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())

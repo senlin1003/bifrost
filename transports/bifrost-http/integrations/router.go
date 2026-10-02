@@ -55,6 +55,8 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -3398,11 +3400,28 @@ func parseMultipartPassthroughBody(body []byte, boundary string) (model string, 
 // The token is only forwarded to a TLS upstream (RFC 6750 section 5.3): a non-https
 // UpstreamURL override never receives it. An empty override means the provider's
 // operator-configured BaseURL, which carries the same trust as its stored keys.
+// isLoopbackUpstream reports whether an http:// upstream override stays on this host
+// (127.0.0.0/8, ::1, localhost). A loopback hop never crosses a network, so the
+// RFC 6750 section 5.3 concern does not apply; this is what lets a local plaintext
+// capture recorder sit between Bifrost and the real TLS upstream.
+func isLoopbackUpstream(upstreamURL string) bool {
+	u, err := url.Parse(upstreamURL)
+	if err != nil || !strings.EqualFold(u.Scheme, "http") {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders map[string]string, provider schemas.ModelProvider, authHeader string, upstreamURL string) {
 	if authHeader == "" {
 		return
 	}
-	if upstreamURL != "" && !strings.HasPrefix(strings.ToLower(upstreamURL), "https://") {
+	if upstreamURL != "" && !strings.HasPrefix(strings.ToLower(upstreamURL), "https://") && !isLoopbackUpstream(upstreamURL) {
 		return
 	}
 	forward := false
