@@ -1003,6 +1003,9 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 	if resp == nil {
 		return nil
 	}
+	// fasthttp reports "text/plain; charset=utf-8" for a response that carried no Content-Type.
+	// Passthrough must not forward a type the provider never sent (ChatGPT's Codex SSE has none).
+	resp.Header.SetNoDefaultContentType(true)
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)

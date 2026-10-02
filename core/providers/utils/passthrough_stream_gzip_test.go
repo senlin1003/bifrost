@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,5 +81,29 @@ func TestStreamPassthroughKeepsPlainBody(t *testing.T) {
 	}
 	if observed != 2 {
 		t.Fatalf("Observe saw %d events, want 2", observed)
+	}
+}
+
+// fasthttp reports text/plain for a response without Content-Type; passthrough must not
+// forward that invented type (FWD-56: Codex SSE reached the client as text/plain).
+func TestExtractPassthroughHeadersKeepsMissingContentType(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.Header.Set("X-Codex-Plan-Type", "team")
+	headers := ExtractPassthroughProviderResponseHeaders(resp)
+	for k := range headers {
+		if strings.EqualFold(k, "content-type") {
+			t.Fatalf("invented content-type %q", headers[k])
+		}
+	}
+	if headers["X-Codex-Plan-Type"] != "team" {
+		t.Fatalf("headers = %v", headers)
+	}
+
+	typed := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(typed)
+	typed.Header.SetContentType("text/event-stream")
+	if got := ExtractPassthroughProviderResponseHeaders(typed)["Content-Type"]; got != "text/event-stream" {
+		t.Fatalf("content-type = %q, want text/event-stream", got)
 	}
 }

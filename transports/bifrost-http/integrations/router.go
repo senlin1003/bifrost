@@ -3511,6 +3511,8 @@ func (g *GenericRouter) handlePassthroughNonStream(
 	}
 
 	ctx.SetStatusCode(resp.StatusCode)
+	// Mirror an absent provider Content-Type instead of fasthttp's text/plain default.
+	ctx.Response.Header.SetNoDefaultContentType(true)
 	for k, v := range resp.Headers {
 		switch strings.ToLower(k) {
 		case "connection", "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
@@ -3604,7 +3606,7 @@ func (g *GenericRouter) handlePassthroughStream(
 	// Vertex/Gemini :streamGenerateContent without ?alt=sse returns an incrementally-delivered
 	// JSON array with Content-Type: application/json. Forcing text/event-stream mislabels that
 	// stream, so clients that dispatch on content-type run an SSE parser over a non-SSE body and
-	// hang. Fall back to text/event-stream only when the upstream didn't provide a Content-Type.
+	// hang.
 	contentType := ""
 	for k, v := range passthroughResp.Headers {
 		if strings.EqualFold(k, "content-type") {
@@ -3612,10 +3614,14 @@ func (g *GenericRouter) handlePassthroughStream(
 			break
 		}
 	}
+	// When the provider sent no Content-Type, send none either (ChatGPT's Codex stream has none):
+	// passthrough mirrors the provider, and fasthttp would otherwise default to text/plain. The
+	// SSE heartbeat stays off for such streams, since passthroughHeartbeatEligible needs SSE.
 	if contentType == "" {
-		contentType = "text/event-stream"
+		ctx.Response.Header.SetNoDefaultContentType(true)
+	} else {
+		ctx.SetContentType(contentType)
 	}
-	ctx.SetContentType(contentType)
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
 	ctx.Response.Header.Set("Connection", "keep-alive")
 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
