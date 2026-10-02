@@ -158143,6 +158143,210 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "104. Native replies keep only upstream policies (fwd61-policy-headers, ai-gateway #40)",
+      "description": "FWD-61: passthrough stream and non-stream replies must not acquire gateway security/CORS policies or fasthttp Server. Exact absent/present upstream values, HSTS and Connection are additionally pinned by local fake-upstream Go tests and ai-gateway ops/bifrost/local_smoke.py. Live paid calls are not run by the agent.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini native stream=false fwd61-policy-headers - ai-gateway #40",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('fwd61-policy-headers: native reply has no invented gateway policy', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.be.below(400);",
+                  "  pm.expect(pm.response.headers.get('Access-Control-Allow-Origin')).not.to.eql('http://localhost:3000');",
+                  "  pm.expect(pm.response.headers.get('Permissions-Policy')).not.to.eql('camera=(), microphone=(), geolocation=()');",
+                  "  pm.expect(pm.response.headers.get('Content-Security-Policy')).not.to.eql(\"frame-ancestors 'none'\");",
+                  "  pm.expect(pm.response.headers.get('Server')).not.to.eql('fasthttp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:3000"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}],\"max_tokens\":16,\"stream\":false}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native stream=true fwd61-policy-headers - ai-gateway #40",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('fwd61-policy-headers: native reply has no invented gateway policy', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.be.below(400);",
+                  "  pm.expect(pm.response.headers.get('Access-Control-Allow-Origin')).not.to.eql('http://localhost:3000');",
+                  "  pm.expect(pm.response.headers.get('Permissions-Policy')).not.to.eql('camera=(), microphone=(), geolocation=()');",
+                  "  pm.expect(pm.response.headers.get('Content-Security-Policy')).not.to.eql(\"frame-ancestors 'none'\");",
+                  "  pm.expect(pm.response.headers.get('Server')).not.to.eql('fasthttp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:3000"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}],\"max_tokens\":16,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 native stream=false fwd61-policy-headers - ai-gateway #40",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('fwd61-policy-headers: native reply has no invented gateway policy', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.be.below(400);",
+                  "  pm.expect(pm.response.headers.get('Access-Control-Allow-Origin')).not.to.eql('http://localhost:3000');",
+                  "  pm.expect(pm.response.headers.get('Permissions-Policy')).not.to.eql('camera=(), microphone=(), geolocation=()');",
+                  "  pm.expect(pm.response.headers.get('Content-Security-Policy')).not.to.eql(\"frame-ancestors 'none'\");",
+                  "  pm.expect(pm.response.headers.get('Server')).not.to.eql('fasthttp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:3000"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-haiku-4-5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}],\"max_tokens\":16,\"stream\":false}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 native stream=true fwd61-policy-headers - ai-gateway #40",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('fwd61-policy-headers: native reply has no invented gateway policy', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.be.below(400);",
+                  "  pm.expect(pm.response.headers.get('Access-Control-Allow-Origin')).not.to.eql('http://localhost:3000');",
+                  "  pm.expect(pm.response.headers.get('Permissions-Policy')).not.to.eql('camera=(), microphone=(), geolocation=()');",
+                  "  pm.expect(pm.response.headers.get('Content-Security-Policy')).not.to.eql(\"frame-ancestors 'none'\");",
+                  "  pm.expect(pm.response.headers.get('Server')).not.to.eql('fasthttp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:3000"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-haiku-4-5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}],\"max_tokens\":16,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

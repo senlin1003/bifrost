@@ -3534,7 +3534,7 @@ func (g *GenericRouter) handlePassthroughNonStream(
 	ctx.Response.Header.SetNoDefaultContentType(true)
 	for k, v := range resp.Headers {
 		switch strings.ToLower(k) {
-		case "connection", "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
+		case "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
 			// drop
 		default:
 			ctx.Response.Header.Set(k, v)
@@ -3641,13 +3641,9 @@ func (g *GenericRouter) handlePassthroughStream(
 	} else {
 		ctx.SetContentType(contentType)
 	}
-	ctx.Response.Header.Set("Cache-Control", "no-cache")
-	ctx.Response.Header.Set("Connection", "keep-alive")
-	ctx.Response.Header.Set("X-Accel-Buffering", "no")
 	for k, v := range passthroughResp.Headers {
 		switch strings.ToLower(k) {
-		case "connection", "transfer-encoding", "content-length", "content-type",
-			"cache-control", "x-accel-buffering",
+		case "transfer-encoding", "content-length", "content-type",
 			"set-cookie", "proxy-authenticate", "www-authenticate":
 			// drop — streaming invariants are set explicitly above (Content-Type is set from the
 			// upstream value before this loop); upstream must not override them here

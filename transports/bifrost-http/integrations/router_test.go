@@ -23,6 +23,29 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// 验收: FWD-61-A2
+func TestIsPassthroughRequestOnlyMatchesRegisteredNativeRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"POST", "/chatgpt_passthrough/backend-api/codex/responses", true},
+		{"GET", "/chatgpt_passthrough/backend-api/codex/responses", false},
+		{"POST", "/chatgpt_passthrough/backend-api/other", false},
+		{"POST", "/anthropic_passthrough/v1/messages", true},
+		{"HEAD", "/openai_passthrough/v1/responses", true},
+		{"OPTIONS", "/anthropic_passthrough/v1/messages", false},
+		{"TRACE", "/openai_passthrough/v1/responses", false},
+		{"POST", "/anthropic_passthrough-lookalike/v1/messages", false},
+		{"GET", "/api/config", false},
+	} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(tc.method)
+		ctx.Request.SetRequestURI(tc.path)
+		assert.Equal(t, tc.want, IsPassthroughRequest(&ctx), "%s %s", tc.method, tc.path)
+	}
+}
+
 func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
