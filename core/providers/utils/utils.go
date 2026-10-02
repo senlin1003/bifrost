@@ -1097,13 +1097,18 @@ var supportedBufferedContentEncodings = map[string]struct{}{
 }
 
 // supportedStreamingContentEncodings are the codings handled incrementally by
-// DecompressStreamBody. Keep this separate from the buffered set: advertising
-// Brotli or zstd on an SSE request would be unsafe until the stream reader can
-// decode those formats without buffering the whole response.
+// DecompressStreamBody and StreamPassthrough (decompressBodyStream). Every coding
+// here must be decodable incrementally: an SSE parser cannot wait for the whole
+// body. gzip, deflate, brotli and zstd readers all yield output as compressed
+// blocks arrive, so a streaming caller's Accept-Encoding (Claude Code sends
+// "gzip, deflate, br, zstd") reaches the provider unchanged.
 var supportedStreamingContentEncodings = map[string]struct{}{
 	"identity": {},
 	"gzip":     {},
 	"x-gzip":   {},
+	"deflate":  {},
+	"br":       {},
+	"zstd":     {},
 }
 
 func filterSupportedAcceptEncodings(values []string, supportedEncodings map[string]struct{}) []string {
@@ -1630,16 +1635,53 @@ func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzi
 	return gz, gz, true
 }
 
+// decompressBodyStream wraps stream with on-the-fly decoding for any coding in
+// supportedStreamingContentEncodings, using the pooled readers. It clears
+// Content-Encoding so downstream consumers don't decode twice. The returned
+// release func must be called once the reader is done. Unknown codings, or a
+// decoder that cannot start, return the stream unchanged with ok=false.
+func decompressBodyStream(resp *fasthttp.Response, stream io.Reader) (reader io.Reader, release func(), ok bool) {
+	ce := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	switch ce {
+	case "gzip", "x-gzip":
+		gz, err := AcquireGzipReader(stream)
+		if err != nil {
+			ReleaseGzipReader(gz)
+			return stream, func() {}, false
+		}
+		reader, release = gz, func() { ReleaseGzipReader(gz) }
+	case "deflate":
+		fr, err := AcquireFlateReader(stream)
+		if err != nil {
+			return stream, func() {}, false
+		}
+		reader, release = fr, func() { ReleaseFlateReader(fr) }
+	case "br":
+		br := AcquireBrotliReader(stream)
+		reader, release = br, func() { ReleaseBrotliReader(br) }
+	case "zstd":
+		dec, err := AcquireZstdDecoder(stream)
+		if err != nil {
+			return stream, func() {}, false
+		}
+		reader, release = dec, func() { ReleaseZstdDecoder(dec) }
+	default:
+		return stream, func() {}, false
+	}
+	resp.Header.Del("Content-Encoding")
+	return reader, release, true
+}
+
 // DecompressStreamBody returns a reader for consuming the response body, with
-// on-the-fly gzip decompression when Content-Encoding indicates gzip. The response
+// on-the-fly decoding when Content-Encoding is gzip, deflate, br or zstd. The response
 // object is NOT modified (no SetBodyStream call), so the original requestStream
 // remains live for proper cleanup by ReleaseStreamingResponse. Clears the
 // Content-Encoding header to prevent double-decompression.
 //
 // Returns:
-//   - io.Reader: the reader to use for scanning (gzip reader if gzip-encoded,
+//   - io.Reader: the reader to use for scanning (decoding reader if encoded,
 //     original body stream otherwise).
-//   - func(): cleanup function that releases the gzip reader back to the pool.
+//   - func(): cleanup function that releases the decoder back to its pool.
 //     Must be called (typically via defer) after streaming is complete.
 func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 	bodyStream := resp.BodyStream()
@@ -1648,13 +1690,8 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 		// that pass the reader to bufio.NewScanner without nil checks.
 		return bytes.NewReader(nil), func() {}
 	}
-	gz, decompressed, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
-	if !wasGzip {
-		return bodyStream, func() {}
-	}
-	return decompressed, func() {
-		ReleaseGzipReader(gz)
-	}
+	decompressed, release, _ := decompressBodyStream(resp, bodyStream)
+	return decompressed, release
 }
 
 // nonSSESampleLimit bounds how much of an unusable body is retained for

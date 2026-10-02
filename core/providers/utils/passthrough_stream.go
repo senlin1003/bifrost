@@ -40,7 +40,7 @@ type PassthroughStreamParams struct {
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each upstream
-// chunk to the client unchanged apart from gzip decoding (otherwise byte-exact, unbounded —
+// chunk to the client unchanged apart from content decoding (otherwise byte-exact, unbounded —
 // forwarding never depends on usage parsing), and in parallel frames complete SSE events into a bounded buffer, feeding each to
 // params.Observe to build usage incrementally. On a terminal marker or EOF it emits the final
 // chunk carrying RawRequest + the observed usage. No full response body is accumulated.
@@ -54,18 +54,19 @@ func StreamPassthrough(
 	rawBodyStream io.Reader,
 	params PassthroughStreamParams,
 ) chan *schemas.BifrostStreamChunk {
-	// Decode gzip before forwarding. The provider's Content-Encoding is dropped from the
+	// Decode before forwarding. The provider's Content-Encoding is dropped from the
 	// forwarded headers (providerResponseFilterHeaders), so passing the encoded bytes through
-	// would hand the client a gzip body labelled as plain text -- a re-compressing hop then
-	// gzips it twice and SSE clients fail and retry without streaming. Streaming passthrough
-	// pins Accept-Encoding to gzip (PinAcceptEncodingForPassthrough) for exactly this decoder,
-	// and Observe needs the decoded events too. Non-gzip bodies are returned unchanged.
+	// would hand the client a compressed body labelled as plain text -- a re-compressing hop
+	// then compresses it twice and SSE clients fail and retry without streaming. Streaming
+	// passthrough keeps Accept-Encoding to the codings decompressBodyStream handles
+	// (PinAcceptEncodingForPassthrough), and Observe needs the decoded events too.
+	// Unencoded bodies are returned unchanged.
 	reader := rawBodyStream
 	releaseGzip := func() {}
 	if resp != nil {
-		if gz, decoded, ok := decompressBodyStreamIfGzip(resp, rawBodyStream); ok {
+		if decoded, release, ok := decompressBodyStream(resp, rawBodyStream); ok {
 			reader = decoded
-			releaseGzip = func() { ReleaseGzipReader(gz) }
+			releaseGzip = release
 		}
 	}
 	// Wrap reader with idle timeout to detect stalled streams.

@@ -2,13 +2,15 @@ package utils
 
 import "testing"
 
+// 验收: FWD-64-A1
 func TestPinAcceptEncodingForPassthroughStreamingKeepsOnlyDecodableCodings(t *testing.T) {
-	// A Claude Code client advertises gzip, deflate, br, zstd. Only gzip can be
-	// decoded incrementally, so that is all the upstream may be offered.
-	headers := map[string]string{"accept-encoding": "gzip, deflate, br, zstd"}
+	// A Claude Code client advertises gzip, deflate, br, zstd. All four decode
+	// incrementally, so the upstream sees exactly what the client sent; codings
+	// the stream reader cannot handle are still dropped.
+	headers := map[string]string{"accept-encoding": "gzip, deflate, br, zstd, exotic"}
 	PinAcceptEncodingForPassthrough(headers, true)
-	if got := headers["accept-encoding"]; got != "gzip" {
-		t.Fatalf("accept-encoding = %q, want %q", got, "gzip")
+	if got := headers["accept-encoding"]; got != "gzip, deflate, br, zstd" {
+		t.Fatalf("accept-encoding = %q, want %q", got, "gzip, deflate, br, zstd")
 	}
 }
 
@@ -23,7 +25,7 @@ func TestPinAcceptEncodingForPassthroughBufferedKeepsTheWiderSet(t *testing.T) {
 func TestPinAcceptEncodingForPassthroughPinsIdentityWhenNothingMatches(t *testing.T) {
 	// Deleting the header would mean "any coding is acceptable" (RFC 9110 12.5.3),
 	// which is wider than what the caller asked for and wider than what we can decode.
-	headers := map[string]string{"accept-encoding": "br"}
+	headers := map[string]string{"accept-encoding": "exotic"}
 	PinAcceptEncodingForPassthrough(headers, true)
 	if got := headers["accept-encoding"]; got != "identity" {
 		t.Fatalf("accept-encoding = %q, want identity", got)
@@ -31,7 +33,7 @@ func TestPinAcceptEncodingForPassthroughPinsIdentityWhenNothingMatches(t *testin
 }
 
 func TestPinAcceptEncodingForPassthroughIsCaseInsensitiveOnTheHeaderName(t *testing.T) {
-	headers := map[string]string{"Accept-Encoding": "gzip, br"}
+	headers := map[string]string{"Accept-Encoding": "gzip, exotic"}
 	PinAcceptEncodingForPassthrough(headers, true)
 	if got := headers["Accept-Encoding"]; got != "gzip" {
 		t.Fatalf("Accept-Encoding = %q, want gzip", got)
@@ -39,7 +41,7 @@ func TestPinAcceptEncodingForPassthroughIsCaseInsensitiveOnTheHeaderName(t *test
 }
 
 func TestPinAcceptEncodingForPassthroughPreservesQValues(t *testing.T) {
-	headers := map[string]string{"accept-encoding": "gzip;q=0.8, br;q=1.0"}
+	headers := map[string]string{"accept-encoding": "gzip;q=0.8, exotic;q=1.0"}
 	PinAcceptEncodingForPassthrough(headers, true)
 	if got := headers["accept-encoding"]; got != "gzip;q=0.8" {
 		t.Fatalf("accept-encoding = %q, want %q", got, "gzip;q=0.8")

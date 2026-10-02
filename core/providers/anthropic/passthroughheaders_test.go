@@ -90,16 +90,17 @@ func TestSetPassthroughHeaders_FiltersAcceptEncodingToSupportedCodecs(t *testing
 			wantForward: "identity",
 		},
 		{
-			name:        "streaming keeps only incrementally decoded codecs",
+			// 验收: FWD-64-A1 -- all four decode incrementally, so Claude Code's list goes out unchanged.
+			name:        "streaming keeps the client's codecs",
 			values:      []string{"gzip, deflate, br, zstd"},
 			streaming:   true,
-			wantForward: "gzip",
+			wantForward: "gzip, deflate, br, zstd",
 		},
 		{
-			// Dropping the header here would let the upstream answer in br, which the
+			// Dropping the header here would let the upstream answer in a coding the
 			// streaming decoder cannot handle.
 			name:        "streaming pins identity when no codec survives",
-			values:      []string{"br, zstd"},
+			values:      []string{"snappy"},
 			streaming:   true,
 			wantForward: "identity",
 		},
