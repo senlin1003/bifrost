@@ -7,6 +7,7 @@ import (
 	"context"
 	cryptoRand "crypto/rand"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -36,6 +37,41 @@ func (m *mockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 }
 
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed
+// 验收: FWD-61-A2
+func TestPassthroughMiddlewaresPreserveOnlyOfficialHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"*"}}}
+	for _, path := range []string{"/anthropic_passthrough/v1/messages", "/chatgpt_passthrough/backend-api/codex/responses", "/openai_passthrough/v1/responses"} {
+		for _, official := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/%v", path, official), func(t *testing.T) {
+				var ctx fasthttp.RequestCtx
+				ctx.Request.SetRequestURI(path)
+				ctx.Request.Header.SetMethod("POST")
+				ctx.Request.Header.Set("Origin", "http://localhost:3000")
+				ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+				next := func(ctx *fasthttp.RequestCtx) {
+					if official {
+						ctx.Response.Header.Set("Referrer-Policy", "same-origin")
+						ctx.Response.Header.Set("X-Content-Type-Options", "official-value")
+						ctx.Response.Header.Set("Access-Control-Allow-Origin", "https://official.invalid")
+						ctx.Response.Header.Set("Content-Security-Policy", "official-csp")
+					}
+				}
+				SecurityHeadersMiddleware()(NewCorsMiddleware(config).Middleware()(next))(&ctx)
+				want := map[string]string{}
+				if official {
+					want = map[string]string{"Referrer-Policy": "same-origin", "X-Content-Type-Options": "official-value", "Access-Control-Allow-Origin": "https://official.invalid", "Content-Security-Policy": "official-csp"}
+				}
+				for _, name := range []string{"X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy", "Content-Security-Policy", "Permissions-Policy", "Strict-Transport-Security", "Access-Control-Allow-Origin", "Access-Control-Allow-Headers", "Access-Control-Allow-Methods", "Access-Control-Allow-Credentials", "Access-Control-Max-Age", "Vary"} {
+					if got := string(ctx.Response.Header.Peek(name)); got != want[name] {
+						t.Errorf("%s = %q, want %q", name, got, want[name])
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{

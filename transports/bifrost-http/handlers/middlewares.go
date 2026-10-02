@@ -38,6 +38,13 @@ const apiPathPrefix = "/api/"
 func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			if integrations.IsPassthroughRequest(ctx) {
+				next(ctx)
+				return
+			}
+			// The server disables its unconditional default so native replies can
+			// retain an absent Server header. Preserve the default for other routes.
+			ctx.Response.Header.SetServer("fasthttp")
 			ctx.Response.Header.Set("X-Frame-Options", "DENY")
 			ctx.Response.Header.Set("X-Content-Type-Options", "nosniff")
 			ctx.Response.Header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -172,6 +179,11 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					}
 					logBuilder.Send()
 				}()
+			}
+			// Keep access logging, but never add CORS headers to native replies.
+			if integrations.IsPassthroughRequest(ctx) {
+				next(ctx)
+				return
 			}
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, cfg.allowedOrigins)

@@ -19,6 +19,44 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// 验收: FWD-61-A2 FWD-61-A3
+func TestPassthroughOfficialResponseHeaders(t *testing.T) {
+	resp := &fasthttp.Response{}
+	official := map[string]string{"Server": "cloudflare", "Strict-Transport-Security": "max-age=123",
+		"Access-Control-Allow-Origin": "https://official.invalid", "Access-Control-Max-Age": "42",
+		"Referrer-Policy": "same-origin", "X-Content-Type-Options": "nosniff", "Connection": "keep-alive"}
+	for name, value := range official {
+		resp.Header.Set(name, value)
+	}
+	resp.Header.Set("Authorization", "Bearer fake-secret")
+	headers := ExtractPassthroughProviderResponseHeaders(resp)
+	for name, value := range official {
+		found := false
+		for key, got := range headers {
+			if strings.EqualFold(key, name) {
+				found = got == value
+			}
+		}
+		if !found {
+			t.Errorf("official %s was lost or changed", name)
+		}
+	}
+	for key := range headers {
+		if strings.EqualFold(key, "authorization") {
+			t.Fatal("credential leaked")
+		}
+	}
+	// The normalized API's existing filtering must not change.
+	normal := ExtractProviderResponseHeaders(resp)
+	for _, name := range []string{"server", "strict-transport-security", "access-control-allow-origin", "connection"} {
+		for key := range normal {
+			if strings.EqualFold(key, name) {
+				t.Errorf("normal API unexpectedly retains %s", name)
+			}
+		}
+	}
+}
+
 func TestRewriteJSONModelValue(t *testing.T) {
 	in := []byte(`{"model":"openai/gpt-5","messages":[{"role":"user","content":"x"}]}`)
 	out, changed := rewriteJSONModelValue(in, "openai/gpt-5", "gpt-5")
@@ -3347,7 +3385,7 @@ func TestStripCallerAuthForInsecureURL(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			safeHeaders := map[string]string{
-				tc.header:       "Bearer sk-ant-oat01-token",
+				tc.header:        "Bearer sk-ant-oat01-token",
 				"anthropic-beta": "context-1m",
 			}
 			StripCallerAuthForInsecureURL(tc.url, safeHeaders)

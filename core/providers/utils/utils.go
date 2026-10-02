@@ -997,8 +997,8 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 }
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
-// fasthttp response. Transport-level and credential-bearing headers are excluded, except
-// content-type, which the passthrough response must retain.
+// fasthttp response. Credential and body-framing headers are excluded; official
+// content-type, connection, server and policy headers are retained on native routes.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
@@ -1010,7 +1010,12 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		kLower := strings.ToLower(k)
-		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
+		// Native replies preserve official policy/identity headers. Normalized API
+		// replies continue to use the original filter above, including credentials.
+		preserve := kLower == "content-type" || kLower == "connection" || kLower == "server" ||
+			kLower == "strict-transport-security" || strings.HasPrefix(kLower, "access-control-allow-") ||
+			kLower == "access-control-expose-headers" || kLower == "access-control-max-age"
+		if schemas.IsSensitiveHeader(kLower) || (shouldFilterProviderResponseHeader(kLower) && !preserve) {
 			return
 		}
 		v := string(value)

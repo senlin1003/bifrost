@@ -10,6 +10,25 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// IsPassthroughRequest matches the native routes before the outer middlewares run.
+// ChatGPT has a single allowed endpoint, unlike the other catch-all routers.
+func IsPassthroughRequest(ctx *fasthttp.RequestCtx) bool {
+	path := string(ctx.Path())
+	if path == "/chatgpt_passthrough/backend-api/codex/responses" {
+		return string(ctx.Method()) == fasthttp.MethodPost
+	}
+	for _, prefix := range []string{"/anthropic_passthrough/", "/openai_passthrough/", "/azure_passthrough/", "/runware_passthrough/", "/genai_passthrough/"} {
+		if strings.HasPrefix(path, prefix) {
+			switch string(ctx.Method()) {
+			case fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodPut, fasthttp.MethodDelete, fasthttp.MethodPatch, fasthttp.MethodHead:
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
+
 // PassthroughRouter is a catch-all router that forwards all requests directly
 // to the provider without matching against known route patterns.
 type PassthroughRouter struct {
