@@ -66,6 +66,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -3438,6 +3439,18 @@ func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders 
 	bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 }
 
+// forwardPassthroughRequestHeader reports whether a caller header (lower-cased, other than
+// authorization, which handlePassthrough handles itself) is sent on to the provider.
+func forwardPassthroughRequestHeader(key string) bool {
+	switch key {
+	case "api-key", "x-api-key", "x-goog-api-key",
+		"host", "connection", "transfer-encoding", "set-cookie", "proxy-authorization",
+		"x-request-id":
+		return false
+	}
+	return !strings.HasPrefix(key, "x-bf-") // internal gateway headers
+}
+
 func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	cfg := g.passthroughCfg
 
@@ -3459,14 +3472,13 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		// never asked for that, and it makes a passthrough request distinguishable from
 		// a direct one. Internal correlation is unaffected: logging and tracing read the
 		// id from the request context, not from what is sent upstream.
-		case "api-key", "x-api-key", "x-goog-api-key",
-			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization",
-			"x-request-id":
+		// cookie is forwarded: a direct client sends back the cookies the provider set
+		// (ChatGPT's load-balancer and bot-management cookies), and the reply's Set-Cookie
+		// is relayed to the caller below, so the round trip matches a direct connection.
 		default:
-			if strings.HasPrefix(keyStr, "x-bf-") {
-				return true // drop internal gateway headers
+			if forwardPassthroughRequestHeader(keyStr) {
+				safeHeaders[keyStr] = string(value)
 			}
-			safeHeaders[keyStr] = string(value)
 		}
 		return true
 	})
@@ -3534,7 +3546,9 @@ func (g *GenericRouter) handlePassthroughNonStream(
 	ctx.Response.Header.SetNoDefaultContentType(true)
 	for k, v := range resp.Headers {
 		switch strings.ToLower(k) {
-		case "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
+		case "set-cookie":
+			providerUtils.WritePassthroughSetCookies(&ctx.Response.Header, v)
+		case "transfer-encoding", "proxy-authenticate", "www-authenticate":
 			// drop
 		default:
 			ctx.Response.Header.Set(k, v)
@@ -3643,8 +3657,10 @@ func (g *GenericRouter) handlePassthroughStream(
 	}
 	for k, v := range passthroughResp.Headers {
 		switch strings.ToLower(k) {
+		case "set-cookie":
+			providerUtils.WritePassthroughSetCookies(&ctx.Response.Header, v)
 		case "transfer-encoding", "content-length", "content-type",
-			"set-cookie", "proxy-authenticate", "www-authenticate":
+			"proxy-authenticate", "www-authenticate":
 			// drop — streaming invariants are set explicitly above (Content-Type is set from the
 			// upstream value before this loop); upstream must not override them here
 		default:

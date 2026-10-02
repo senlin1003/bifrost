@@ -996,6 +996,20 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	return headers
 }
 
+// PassthroughSetCookieHeader is the key under which ExtractPassthroughProviderResponseHeaders
+// stores the provider's Set-Cookie values, one per line.
+const PassthroughSetCookieHeader = "Set-Cookie"
+
+// WritePassthroughSetCookies adds each Set-Cookie value stored by
+// ExtractPassthroughProviderResponseHeaders as its own response header line.
+func WritePassthroughSetCookies(h *fasthttp.ResponseHeader, stored string) {
+	for _, v := range strings.Split(stored, "\n") {
+		if v = strings.TrimSpace(v); v != "" {
+			h.Add(PassthroughSetCookieHeader, v)
+		}
+	}
+}
+
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
 // fasthttp response. Credential and body-framing headers are excluded; official
 // content-type, connection, server and policy headers are retained on native routes.
@@ -1010,6 +1024,18 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		kLower := strings.ToLower(k)
+		// A direct client stores the provider's cookies and sends them back (ChatGPT's
+		// Codex endpoints set load-balancer and bot-management cookies), so passthrough
+		// relays every Set-Cookie. They cannot be comma-joined, so each value is kept on
+		// its own line; WritePassthroughSetCookies splits them again.
+		if kLower == "set-cookie" {
+			if existing, ok := headers[PassthroughSetCookieHeader]; ok && existing != "" {
+				headers[PassthroughSetCookieHeader] = existing + "\n" + string(value)
+			} else {
+				headers[PassthroughSetCookieHeader] = string(value)
+			}
+			return
+		}
 		// Native replies preserve official policy/identity headers. Normalized API
 		// replies continue to use the original filter above, including credentials.
 		preserve := kLower == "content-type" || kLower == "connection" || kLower == "server" ||
