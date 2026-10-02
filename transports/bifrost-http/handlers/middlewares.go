@@ -781,6 +781,13 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	}
 	// Apply headers
 	for key, value := range req.Headers {
+		// fasthttp's Set("Cookie") appends the parsed cookies to the ones already held
+		// instead of replacing them, so writing the unchanged header back doubled every
+		// cookie on each pass (pre-auth + pre-hook = 4 copies upstream). Clear first so
+		// the header ends up exactly as the plugin left it.
+		if strings.EqualFold(key, "cookie") {
+			ctx.Request.Header.DelAllCookies()
+		}
 		ctx.Request.Header.Set(key, value)
 	}
 	// Apply query params
