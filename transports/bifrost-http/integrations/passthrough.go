@@ -15,7 +15,7 @@ import (
 func IsPassthroughRequest(ctx *fasthttp.RequestCtx) bool {
 	path := string(ctx.Path())
 	if path == "/chatgpt_passthrough/backend-api/codex/responses" {
-		return string(ctx.Method()) == fasthttp.MethodPost
+		return string(ctx.Method()) == fasthttp.MethodPost || string(ctx.Method()) == fasthttp.MethodGet
 	}
 	for _, prefix := range []string{"/anthropic_passthrough/", "/openai_passthrough/", "/azure_passthrough/", "/runware_passthrough/", "/genai_passthrough/"} {
 		if strings.HasPrefix(path, prefix) {

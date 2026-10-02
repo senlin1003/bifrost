@@ -2,7 +2,17 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
+	"github.com/fasthttp/router"
+	ws "github.com/fasthttp/websocket"
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
+	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +26,225 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
 )
+
+type codexTestHooks struct {
+	pre     int
+	post    int
+	cleanup int
+	deny    int
+	t       *testing.T
+}
+
+func (r *codexTestHooks) RunPreRequestHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+}
+func (r *codexTestHooks) RunStreamPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*bifrost.WSStreamHooks, *schemas.BifrostError) {
+	r.pre++
+	if ctx.Value(schemas.BifrostContextKeyVirtualKey) != "sk-bf-test" || ctx.Value(schemas.BifrostContextKeySkipKeySelection) != true {
+		r.t.Error("missing per-turn governance identity")
+	}
+	if req.ResponsesRequest.Params.Store == nil || *req.ResponsesRequest.Params.Store {
+		r.t.Error("store=false overwritten")
+	}
+	if r.pre == r.deny {
+		return nil, newBifrostError(429, "rate_limit_exceeded", "test quota exhausted")
+	}
+	return &bifrost.WSStreamHooks{
+		Cleanup: func() { r.cleanup++ },
+		PostHookRunner: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if ctx.Value(schemas.BifrostContextKeyStreamEndIndicator) == true {
+				r.post++
+				if resp != nil && (resp.ResponsesStreamResponse.Response == nil || resp.ResponsesStreamResponse.Response.Usage == nil) {
+					r.t.Error("terminal usage missing from post hook")
+				}
+			}
+			return resp, err
+		},
+	}, nil
+}
+
+// 验收: FWD-67-A1~ FWD-67-A2~
+func TestChatGPTWSMultiTurnRawAndQuota(t *testing.T) {
+	for _, denied := range []bool{false, true} {
+		t.Run(fmt.Sprint(denied), func(t *testing.T) {
+			var dials, requests atomic.Int32
+			upgrader := ws.Upgrader{}
+			payload := `{ "type":"response.create", "model":"gpt-5", "store":false, "input":[], "unknown":{"preserve":1} }`
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				dials.Add(1)
+				if req.URL.RawQuery != "test=1" || req.Header.Get("Authorization") != "Bearer company.test.token" || req.Header.Get("Cookie") != "session=test" || req.Header.Get("Session-Id") != "native-session" || req.Header.Get("X-Bf-Vk") != "" {
+					t.Error("upstream handshake fidelity or internal key leak")
+				}
+				conn, err := upgrader.Upgrade(w, req, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer conn.Close()
+				for {
+					_, raw, err := conn.ReadMessage()
+					if err != nil {
+						return
+					}
+					requests.Add(1)
+					if string(raw) != payload {
+						t.Error("native message changed")
+					}
+					_ = conn.WriteMessage(ws.TextMessage, []byte(`{"type":"response.completed","sequence_number":1,"response":{"id":"resp-test","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`))
+				}
+			}))
+			defer upstream.Close()
+			t.Setenv(integrations.ChatGPTUpstreamEnv, upstream.URL)
+			target, err := chatGPTWSTarget("test=1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			hooks := &codexTestHooks{t: t}
+			if denied {
+				hooks.deny = 2
+			}
+			done := make(chan struct{})
+			handler := &WSResponsesHandler{handlerStore: testWSHandlerStore{}}
+			auth := &authHeaders{virtualKey: "sk-bf-test", authorization: "Bearer company.test.token", headers: map[string][]string{
+				"authorization": {"Bearer company.test.token"}, "x-bf-vk": {"sk-bf-test"}, "cookie": {"session=test"}, "session-id": {"native-session"},
+			}}
+			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				conn, err := upgrader.Upgrade(w, req, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer close(done)
+				handler.chatGPTEventLoop(bfws.NewSession(conn), auth, target, hooks)
+			}))
+			defer gateway.Close()
+			conn, _, err := ws.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			for i := 0; i < 2; i++ {
+				_ = conn.WriteMessage(ws.TextMessage, []byte(payload))
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_, raw, err := conn.ReadMessage()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if denied && i == 1 {
+					if !strings.Contains(string(raw), "quota exhausted") {
+						t.Fatalf("quota bypass: %s", raw)
+					}
+				} else if !strings.Contains(string(raw), "response.completed") {
+					t.Fatalf("unexpected event: %s", raw)
+				}
+			}
+			_ = conn.Close()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("disconnect did not release session")
+			}
+			want := 2
+			if denied {
+				want = 1
+			}
+			if dials.Load() != 1 || int(requests.Load()) != want || hooks.pre != 2 || hooks.post != want || hooks.cleanup != want {
+				t.Fatalf("dials=%d requests=%d pre=%d post=%d cleanup=%d", dials.Load(), requests.Load(), hooks.pre, hooks.post, hooks.cleanup)
+			}
+		})
+	}
+}
+
+func TestChatGPTWSTargetRejectsPlaintextRemote(t *testing.T) {
+	for _, base := range []string{"http://example.com", "https://user:password@example.com", "https://chatgpt.com?redirect=1"} {
+		t.Setenv(integrations.ChatGPTUpstreamEnv, base)
+		if _, err := chatGPTWSTarget(""); err == nil {
+			t.Fatalf("unsafe upstream accepted: %s", base)
+		}
+	}
+}
+
+// 验收: FWD-67-A1~
+func TestChatGPTWSRouteRequiresUpgradeAndCredentials(t *testing.T) {
+	h := &WSResponsesHandler{}
+	r := router.New()
+	h.RegisterRoutes(r)
+	for _, upgrade := range []bool{false, true} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
+		ctx.Request.Header.SetMethod("GET")
+		want := 400
+		if upgrade {
+			ctx.Request.Header.Set("Connection", "Upgrade")
+			ctx.Request.Header.Set("Upgrade", "websocket")
+			want = 401
+		}
+		r.Handler(&ctx)
+		if ctx.Response.StatusCode() != want {
+			t.Fatalf("upgrade=%v status=%d want=%d", upgrade, ctx.Response.StatusCode(), want)
+		}
+	}
+}
+
+// 验收: FWD-67-A1~
+func TestChatGPTWSDisconnectDuringTurnFinalizesHooks(t *testing.T) {
+	upgrader := ws.Upgrader{}
+	started := make(chan struct{})
+	upstreamClosed := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		defer close(upstreamClosed)
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Error(err)
+			return
+		}
+		close(started)
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer upstream.Close()
+	hooks := &codexTestHooks{t: t}
+	h := &WSResponsesHandler{handlerStore: testWSHandlerStore{}}
+	done := make(chan struct{})
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer close(done)
+		h.chatGPTEventLoop(bfws.NewSession(conn), &authHeaders{virtualKey: "sk-bf-test", headers: map[string][]string{}}, "ws"+strings.TrimPrefix(upstream.URL, "http"), hooks)
+	}))
+	defer gateway.Close()
+	conn, _, err := ws.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.WriteMessage(ws.TextMessage, []byte(`{"type":"response.create","model":"gpt-5","store":false,"input":[]}`))
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn did not reach upstream")
+	}
+	_ = conn.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn not interrupted by client disconnect")
+	}
+	select {
+	case <-upstreamClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream connection leaked")
+	}
+	if hooks.pre != 1 || hooks.post != 1 || hooks.cleanup != 1 {
+		t.Fatalf("unbalanced hooks: %+v", hooks)
+	}
+}
 
 type testWSHandlerStore struct {
 	matcher *lib.HeaderMatcher

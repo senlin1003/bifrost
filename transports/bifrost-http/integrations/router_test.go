@@ -30,7 +30,7 @@ func TestIsPassthroughRequestOnlyMatchesRegisteredNativeRoutes(t *testing.T) {
 		want         bool
 	}{
 		{"POST", "/chatgpt_passthrough/backend-api/codex/responses", true},
-		{"GET", "/chatgpt_passthrough/backend-api/codex/responses", false},
+		{"GET", "/chatgpt_passthrough/backend-api/codex/responses", true},
 		{"POST", "/chatgpt_passthrough/backend-api/other", false},
 		{"POST", "/anthropic_passthrough/v1/messages", true},
 		{"HEAD", "/openai_passthrough/v1/responses", true},
