@@ -68,10 +68,11 @@ func TestChatGPTWSMultiTurnRawAndQuota(t *testing.T) {
 		t.Run(fmt.Sprint(denied), func(t *testing.T) {
 			var dials, requests atomic.Int32
 			upgrader := ws.Upgrader{}
-			payload := `{ "type":"response.create", "model":"gpt-5", "store":false, "input":[], "unknown":{"preserve":1} }`
+			payload := `{ "type":"response.create", "model":"gpt-5", "store":false, "input":[], "unknown":{"preserve":1}, "prompt_cache_key":"native-session", "client_metadata":{"session_id":"native-session","turn_id":"independent-turn"} }`
+			expectedPayload := strings.ReplaceAll(payload, `"native-session"`, `"company-session"`)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				dials.Add(1)
-				if req.URL.RawQuery != "test=1" || req.Header.Get("Authorization") != "Bearer company.test.token" || req.Header.Get("Cookie") != "session=test" || req.Header.Get("Session-Id") != "native-session" || req.Header.Get("X-Bf-Vk") != "" {
+				if req.URL.RawQuery != "test=1" || req.Header.Get("Authorization") != "Bearer company.test.token" || req.Header.Get("Cookie") != "session=test" || req.Header.Get("Session-Id") != "company-session" || req.Header.Get("X-Bf-Vk") != "" || req.Header.Get(codexIdentityHeader) != "" {
 					t.Error("upstream handshake fidelity or internal key leak")
 				}
 				conn, err := upgrader.Upgrade(w, req, nil)
@@ -86,7 +87,7 @@ func TestChatGPTWSMultiTurnRawAndQuota(t *testing.T) {
 						return
 					}
 					requests.Add(1)
-					if string(raw) != payload {
+					if string(raw) != expectedPayload {
 						t.Error("native message changed")
 					}
 					_ = conn.WriteMessage(ws.TextMessage, []byte(`{"type":"response.completed","sequence_number":1,"response":{"id":"resp-test","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`))
@@ -105,7 +106,8 @@ func TestChatGPTWSMultiTurnRawAndQuota(t *testing.T) {
 			done := make(chan struct{})
 			handler := &WSResponsesHandler{handlerStore: testWSHandlerStore{}}
 			auth := &authHeaders{virtualKey: "sk-bf-test", authorization: "Bearer company.test.token", headers: map[string][]string{
-				"authorization": {"Bearer company.test.token"}, "x-bf-vk": {"sk-bf-test"}, "cookie": {"session=test"}, "session-id": {"native-session"},
+				"authorization": {"Bearer company.test.token"}, "x-bf-vk": {"sk-bf-test"}, "cookie": {"session=test"}, "session-id": {"company-session"},
+				codexIdentityHeader: {`{"original":"native-session","mapped":"company-session","installation":"company-device"}`},
 			}}
 			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				conn, err := upgrader.Upgrade(w, req, nil)
