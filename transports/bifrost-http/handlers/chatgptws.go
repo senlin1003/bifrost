@@ -129,6 +129,12 @@ func (h *WSResponsesHandler) chatGPTEventLoop(session *bfws.Session, auth *authH
 }
 
 func (h *WSResponsesHandler) chatGPTTurn(session *bfws.Session, auth *authHeaders, target string, raw []byte, runner chatGPTWSHooks) bool {
+	mapped, mappingErr := rewriteCodexWS(raw, auth)
+	if mappingErr != nil {
+		writeWSError(session, 400, "invalid_request_error", "invalid native identity context")
+		return false
+	}
+	raw = mapped
 	var event schemas.WebSocketResponsesEvent
 	if sonic.Unmarshal(raw, &event) != nil || event.Type != schemas.WSEventResponseCreate || event.Model == "" || strings.Contains(event.Model, "/") {
 		writeWSError(session, 400, "invalid_request_error", "native response.create and model required")
