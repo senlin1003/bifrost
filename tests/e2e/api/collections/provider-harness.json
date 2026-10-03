@@ -158347,6 +158347,129 @@
           }
         }
       ]
+    },
+    {
+      "name": "FWD-67 OpenAI Codex WebSocket upgrade guards",
+      "description": "Pins the dedicated native Codex WebSocket route. Plain HTTP must be rejected as 400 rather than route-not-found. Native multi-turn byte fidelity, per-turn quota and disconnect tests run in TestChatGPTWSMultiTurnRawAndQuota; newman cannot exchange WebSocket frames. This guard consumes no provider tokens.",
+      "item": [
+        {
+          "name": "OpenAI Codex WebSocket GET requires upgrade - FWD-67",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401,403,429,500,502,503,504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native Codex WebSocket route rejects plain HTTP', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); pm.expect(pm.response.text()).to.include('websocket upgrade required'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "FWD-67 OpenAI Codex background routes",
+      "description": "Observed AIGW17 S2 background paths formerly returned route-not-found. Requires a test ChatGPT OAuth account; no generation requests. Provider-level wire tests and hook/accounting coverage are in TestChatGPTBackgroundWireAndHooks.",
+      "item": [
+        {
+          "name": "OpenAI Codex model catalog - FWD-67-background",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401,403,429,500,502,503,504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Codex background route reaches upstream', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{codexAccessToken}}"
+              },
+              {
+                "key": "Chatgpt-Account-Id",
+                "value": "{{codexAccountId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI Codex usage lookup - FWD-67-background",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401,403,429,500,502,503,504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Codex background route reaches upstream', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{codexAccessToken}}"
+              },
+              {
+                "key": "Chatgpt-Account-Id",
+                "value": "{{codexAccountId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/wham/usage",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "wham",
+                "usage"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

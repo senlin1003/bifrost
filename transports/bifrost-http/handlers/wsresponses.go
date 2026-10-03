@@ -75,6 +75,7 @@ func (h *WSResponsesHandler) Close() {
 // and all OpenAI integration paths.
 func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
+	r.GET("/chatgpt_passthrough/backend-api/codex/responses", lib.ChainMiddlewares(h.handleChatGPTUpgrade, middlewares...))
 	// Base path (outside integration prefix)
 	r.GET("/v1/responses", handler)
 	// OpenAI integration paths (/openai/v1/responses, /openai/responses, /openai/openai/responses)
@@ -686,6 +687,10 @@ func (h *WSResponsesHandler) trackResponseID(session *bfws.Session, data []byte)
 
 // convertEventToRequest converts a WebSocket response.create event to a BifrostResponsesRequest.
 func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent) (*schemas.BifrostResponsesRequest, error) {
+	return h.convertEventToRequestWithEmptyInput(event, false)
+}
+
+func (h *WSResponsesHandler) convertEventToRequestWithEmptyInput(event *schemas.WebSocketResponsesEvent, allowEmpty bool) (*schemas.BifrostResponsesRequest, error) {
 	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
 	if provider == "" || modelName == "" {
 		return nil, errModelFormat
@@ -708,7 +713,7 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 			}
 		}
 	}
-	if len(input) == 0 {
+	if len(input) == 0 && !allowEmpty {
 		return nil, errInputRequired
 	}
 

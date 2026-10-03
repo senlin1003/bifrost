@@ -11,11 +11,14 @@ import (
 )
 
 // IsPassthroughRequest matches the native routes before the outer middlewares run.
-// ChatGPT has a single allowed endpoint, unlike the other catch-all routers.
+// ChatGPT allows native Codex dialogue and observed background API families.
 func IsPassthroughRequest(ctx *fasthttp.RequestCtx) bool {
 	path := string(ctx.Path())
 	if path == "/chatgpt_passthrough/backend-api/codex/responses" {
-		return string(ctx.Method()) == fasthttp.MethodPost
+		return string(ctx.Method()) == fasthttp.MethodPost || string(ctx.Method()) == fasthttp.MethodGet
+	}
+	if isChatGPTBackgroundRequest(string(ctx.Method()), path) {
+		return true
 	}
 	for _, prefix := range []string{"/anthropic_passthrough/", "/openai_passthrough/", "/azure_passthrough/", "/runware_passthrough/", "/genai_passthrough/"} {
 		if strings.HasPrefix(path, prefix) {
@@ -72,8 +75,8 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 }
 
 // NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
-// Restricted to the Codex responses endpoint only — this is not a general-purpose
-// ChatGPT backend proxy.
+// Restricted to native Codex dialogue and observed background API families,
+// rather than a general-purpose ChatGPT backend proxy.
 func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:    schemas.OpenAI,
@@ -81,10 +84,45 @@ func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		StripPrefix: []string{
 			"/chatgpt_passthrough",
 		},
-		AllowedRoutes: []PassthroughRoute{
-			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
-		},
+		AllowedRoutes: append([]PassthroughRoute{{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"}}, chatGPTBackgroundRoutes()...),
 	})
+}
+
+// Native Codex background API families observed in AIGW17 S2. Keep this list
+// shared by outer middleware detection and route registration; this is not a
+// general ChatGPT proxy. Wildcards only match descendants of a slash boundary.
+func chatGPTBackgroundRoutes() []PassthroughRoute {
+	var routes []PassthroughRoute
+	add := func(path string, methods ...string) {
+		for _, method := range methods {
+			routes = append(routes, PassthroughRoute{Method: method, Path: "/chatgpt_passthrough" + path})
+		}
+	}
+	add("/backend-api/codex/models", "GET", "HEAD")
+	add("/backend-api/plugins/featured", "GET", "HEAD")
+	add("/backend-api/codex/analytics-events/events", "POST")
+	for _, path := range []string{"/backend-api/ps/plugins", "/backend-api/ps/mcp", "/backend-api/wham"} {
+		for _, pattern := range []string{path, path + "/{path:*}"} {
+			add(pattern, "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
+		}
+	}
+	return routes
+}
+
+func isChatGPTBackgroundRequest(method, path string) bool {
+	for _, route := range chatGPTBackgroundRoutes() {
+		if method != route.Method {
+			continue
+		}
+		if prefix, wildcard := strings.CutSuffix(route.Path, "{path:*}"); wildcard {
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
+		} else if path == route.Path {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatGPTUpstreamEnv overrides the /chatgpt_passthrough upstream (default https://chatgpt.com).

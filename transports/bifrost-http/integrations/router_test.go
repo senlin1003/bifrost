@@ -9,12 +9,14 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -30,7 +32,7 @@ func TestIsPassthroughRequestOnlyMatchesRegisteredNativeRoutes(t *testing.T) {
 		want         bool
 	}{
 		{"POST", "/chatgpt_passthrough/backend-api/codex/responses", true},
-		{"GET", "/chatgpt_passthrough/backend-api/codex/responses", false},
+		{"GET", "/chatgpt_passthrough/backend-api/codex/responses", true},
 		{"POST", "/chatgpt_passthrough/backend-api/other", false},
 		{"POST", "/anthropic_passthrough/v1/messages", true},
 		{"HEAD", "/openai_passthrough/v1/responses", true},
@@ -79,6 +81,143 @@ func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	r.Handler(&ctx)
 
 	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
+}
+
+// 验收: FWD-67-A2~
+func TestChatGPTBackgroundRoutes(t *testing.T) {
+	r := router.New()
+	NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusNoContent) }
+	})
+	for _, tc := range []struct {
+		method, path string
+		allowed      bool
+	}{
+		{"GET", "/backend-api/codex/models?client_version=0.159.3", true},
+		{"HEAD", "/backend-api/codex/models", true},
+		{"GET", "/backend-api/ps/plugins/list", true},
+		{"POST", "/backend-api/ps/plugins/install", true},
+		{"GET", "/backend-api/ps/mcp", true},
+		{"PUT", "/backend-api/ps/mcp/config", true},
+		{"GET", "/backend-api/wham/usage", true},
+		{"GET", "/backend-api/plugins/featured", true},
+		{"POST", "/backend-api/codex/analytics-events/events", true},
+		{"GET", "/backend-api/codex/analytics-events/events", false},
+		{"POST", "/backend-api/codex/models", false},
+		{"DELETE", "/backend-api/accounts", false},
+		{"GET", "/backend-api/ps/mcp-lookalike", false},
+		{"GET", "/backend-api/ps/plugins-other/list", false},
+		{"TRACE", "/backend-api/wham/usage", false},
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI("/chatgpt_passthrough" + tc.path)
+			require.Equal(t, tc.allowed, IsPassthroughRequest(&ctx), "outer middleware route detection")
+			r.Handler(&ctx)
+			if tc.allowed {
+				require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
+			} else {
+				require.GreaterOrEqual(t, ctx.Response.StatusCode(), 400)
+			}
+		})
+	}
+}
+
+type codexBackgroundAccount struct{}
+
+func (codexBackgroundAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+func (codexBackgroundAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return nil, nil
+}
+func (codexBackgroundAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{NetworkConfig: schemas.DefaultNetworkConfig, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+type codexBackgroundHooks struct {
+	model     string
+	usage     *schemas.BifrostPassthroughUsage
+	pre, post int
+}
+
+func (*codexBackgroundHooks) GetName() string { return "codex-background-capture" }
+func (*codexBackgroundHooks) Cleanup() error  { return nil }
+func (*codexBackgroundHooks) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (h *codexBackgroundHooks) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	h.pre++
+	h.model = req.PassthroughRequest.Model
+	return req, nil, nil
+}
+func (h *codexBackgroundHooks) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	h.post++
+	if resp != nil && resp.PassthroughResponse != nil {
+		h.usage = resp.PassthroughResponse.PassthroughUsage
+	}
+	return resp, err, nil
+}
+
+// 验收: FWD-67-A2~
+func TestChatGPTBackgroundWireAndHooks(t *testing.T) {
+	raw := []byte(`{ "model": "telemetry-data", "stream": true, "unknown": 9007199254740993 }`)
+	type captured struct {
+		uri, method string
+		headers     http.Header
+		body        []byte
+	}
+	received := make(chan captured, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received <- captured{r.RequestURI, r.Method, r.Header.Clone(), body}
+		w.Header().Add("Set-Cookie", "route=a; Path=/")
+		w.Header().Add("Set-Cookie", "affinity=b; Path=/; HttpOnly")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"input_tokens":99,"output_tokens":8},"ok":true}`))
+	}))
+	defer upstream.Close()
+	t.Setenv(ChatGPTUpstreamEnv, upstream.URL)
+	hooks := &codexBackgroundHooks{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexBackgroundAccount{}, Logger: &testLogger{}, LLMPlugins: []schemas.LLMPlugin{hooks}})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	NewChatGPTPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	var req fasthttp.Request
+	req.Header.SetMethod("POST")
+	req.SetRequestURI("/chatgpt_passthrough/backend-api/codex/analytics-events/events?batch=a%2Fb&n=2")
+	req.Header.Set("Authorization", "Bearer eyJfake.eyJfake.signature")
+	req.Header.Set("Chatgpt-Account-Id", "company-account")
+	req.Header.Set("Cookie", "route=a; affinity=b")
+	req.Header.Set("Version", "0.159.3")
+	req.Header.Set("Originator", "codex_exec")
+	req.Header.Set("X-Bf-Vk", "test-internal-key")
+	req.Header.SetContentType("application/json")
+	req.SetBody(raw)
+	var ctx fasthttp.RequestCtx
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1234}, nil)
+	r.Handler(&ctx)
+	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	got := <-received
+	require.Equal(t, "POST", got.method)
+	require.Equal(t, "/backend-api/codex/analytics-events/events?batch=a%2Fb&n=2", got.uri)
+	require.Equal(t, raw, got.body)
+	require.Equal(t, "Bearer eyJfake.eyJfake.signature", got.headers.Get("Authorization"))
+	require.Equal(t, "company-account", got.headers.Get("Chatgpt-Account-Id"))
+	require.Equal(t, "route=a; affinity=b", got.headers.Get("Cookie"))
+	require.Equal(t, "0.159.3", got.headers.Get("Version"))
+	require.Equal(t, "codex_exec", got.headers.Get("Originator"))
+	require.Empty(t, got.headers.Get("X-Bf-Vk"))
+	require.Empty(t, hooks.model, "background model is data, not inference")
+	require.Nil(t, hooks.usage)
+	require.Equal(t, 1, hooks.pre)
+	require.Equal(t, 1, hooks.post)
+	var cookies []string
+	ctx.Response.Header.VisitAllCookie(func(k, v []byte) { cookies = append(cookies, string(v)) })
+	require.Len(t, cookies, 2)
+	require.Contains(t, string(ctx.Response.Body()), `"ok":true`)
 }
 
 func TestChatGPTUpstreamURLDefaultsToChatGPT(t *testing.T) {
