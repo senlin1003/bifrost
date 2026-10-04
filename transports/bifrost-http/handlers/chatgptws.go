@@ -69,6 +69,10 @@ func chatGPTWSHeaders(auth *authHeaders) http.Header {
 }
 
 func (h *WSResponsesHandler) handleChatGPTUpgrade(ctx *fasthttp.RequestCtx) {
+	h.handleChatGPTUpgradeWithHooks(ctx, h.client)
+}
+
+func (h *WSResponsesHandler) handleChatGPTUpgradeWithHooks(ctx *fasthttp.RequestCtx, runner chatGPTWSHooks) {
 	if !ws.FastHTTPIsWebSocketUpgrade(ctx) {
 		ctx.Error("websocket upgrade required", fasthttp.StatusBadRequest)
 		return
@@ -83,16 +87,46 @@ func (h *WSResponsesHandler) handleChatGPTUpgrade(ctx *fasthttp.RequestCtx) {
 		ctx.Error("invalid ChatGPT upstream", fasthttp.StatusBadGateway)
 		return
 	}
-	_ = h.upgrader.Upgrade(ctx, func(conn *ws.Conn) {
+	reservation, err := h.sessions.Reserve()
+	if err != nil {
+		ctx.Error("websocket connection limit reached", fasthttp.StatusTooManyRequests)
+		return
+	}
+	var proxy *schemas.ProxyConfig
+	if h.config != nil {
+		if cfg, cfgErr := h.config.GetProviderConfigRaw(schemas.OpenAI); cfgErr == nil && cfg != nil {
+			proxy = cfg.ProxyConfig
+		}
+	}
+	upstream, response, err := bfws.DialUpstreamWithResponse(target, chatGPTWSHeaders(auth), schemas.OpenAI, "", proxy)
+	if response != nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
+	if err != nil {
+		reservation.Release()
+		ctx.Error("ChatGPT websocket connection failed", fasthttp.StatusBadGateway)
+		return
+	}
+	for _, cookie := range response.Header.Values("Set-Cookie") {
+		ctx.Response.Header.Add("Set-Cookie", cookie)
+	}
+	err = h.upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
-		session, err := h.sessions.Create(conn)
+		defer upstream.Close()
+		session, err := reservation.Complete(conn)
 		if err != nil {
 			writeWSError(conn, 429, "websocket_connection_limit_reached", err.Error())
 			return
 		}
 		defer h.sessions.Remove(conn)
-		h.chatGPTEventLoop(session, auth, target, h.client)
+		session.SetUpstream(upstream)
+		h.chatGPTEventLoop(session, auth, target, runner)
 	})
+	if err != nil {
+		reservation.Release()
+		_ = upstream.Close()
+		ctx.Response.Header.Del("Set-Cookie")
+	}
 }
 
 func (h *WSResponsesHandler) chatGPTEventLoop(session *bfws.Session, auth *authHeaders, target string, runner chatGPTWSHooks) {

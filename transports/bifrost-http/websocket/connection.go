@@ -255,11 +255,18 @@ func isConnectionDead(err error) bool {
 
 // DialUpstream creates a new upstream connection without adding it to the pool.
 func DialUpstream(url string, headers http.Header, provider schemas.ModelProvider, keyID string, proxyConfig *schemas.ProxyConfig) (*UpstreamConn, error) {
+	conn, _, err := DialUpstreamWithResponse(url, headers, provider, keyID, proxyConfig)
+	return conn, err
+}
+
+// DialUpstreamWithResponse also returns the handshake response for native relays.
+// Each downstream hop must generate its own websocket security headers.
+func DialUpstreamWithResponse(url string, headers http.Header, provider schemas.ModelProvider, keyID string, proxyConfig *schemas.ProxyConfig) (*UpstreamConn, *http.Response, error) {
 	wsConn, resp, err := Dial(url, headers, proxyConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", url, wrapHandshakeError(resp, err))
+		return nil, resp, fmt.Errorf("failed to dial upstream websocket %s: %w", url, wrapHandshakeError(resp, err))
 	}
-	return newUpstreamConn(wsConn, provider, keyID, url), nil
+	return newUpstreamConn(wsConn, provider, keyID, url), resp, nil
 }
 
 // Dial creates a new WebSocket connection to the given URL with the provided headers,
