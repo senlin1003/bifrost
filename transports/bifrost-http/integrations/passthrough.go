@@ -101,7 +101,8 @@ func chatGPTBackgroundRoutes() []PassthroughRoute {
 	add("/backend-api/codex/models", "GET", "HEAD")
 	add("/backend-api/plugins/featured", "GET", "HEAD")
 	add("/backend-api/codex/analytics-events/events", "POST")
-	for _, path := range []string{"/backend-api/ps/plugins", "/backend-api/ps/mcp", "/backend-api/wham"} {
+	// ps/apps: Codex 0.160 posts ps/apps/batch at startup (FWD-67 CX-B7, official 200, was 405 here).
+	for _, path := range []string{"/backend-api/ps/plugins", "/backend-api/ps/mcp", "/backend-api/ps/apps", "/backend-api/wham"} {
 		for _, pattern := range []string{path, path + "/{path:*}"} {
 			add(pattern, "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
 		}
