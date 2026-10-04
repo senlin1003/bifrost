@@ -99,6 +99,8 @@ func TestChatGPTBackgroundRoutes(t *testing.T) {
 		{"POST", "/backend-api/ps/plugins/install", true},
 		{"GET", "/backend-api/ps/mcp", true},
 		{"PUT", "/backend-api/ps/mcp/config", true},
+		{"POST", "/backend-api/ps/apps/batch", true},
+		{"GET", "/backend-api/ps/apps-lookalike", false},
 		{"GET", "/backend-api/wham/usage", true},
 		{"GET", "/backend-api/plugins/featured", true},
 		{"POST", "/backend-api/codex/analytics-events/events", true},
