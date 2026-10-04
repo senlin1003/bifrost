@@ -36,6 +36,47 @@ func TestSessionManagerConnectionLimit(t *testing.T) {
 	}
 }
 
+func TestSessionReservationLimitAndCleanup(t *testing.T) {
+	m := NewSessionManager(1)
+	r, err := m.Reserve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Create(newTestConn()); err != ErrConnectionLimitReached {
+		t.Fatal("Create bypassed reservation")
+	}
+	if _, err := m.Reserve(); err != ErrConnectionLimitReached {
+		t.Fatal("Reserve bypassed limit")
+	}
+	r.Release()
+	r.Release()
+	r, err = m.Reserve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := newTestConn()
+	if _, err = r.Complete(conn); err != nil {
+		t.Fatal(err)
+	}
+	r.Release()
+	if _, err := m.Reserve(); err != ErrConnectionLimitReached {
+		t.Fatal("active slot lost")
+	}
+	m.Remove(conn)
+	r, err = m.Reserve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.CloseAll()
+	if _, err := r.Complete(newTestConn()); err != ErrConnectionLimitReached {
+		t.Fatal("shutdown reservation resurrected")
+	}
+	r.Release()
+	if _, err := m.Create(newTestConn()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionManagerRemove(t *testing.T) {
 	manager := NewSessionManager(2)
 	conn := newTestConn()

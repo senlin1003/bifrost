@@ -448,16 +448,18 @@ func (s *Session) Close() {
 
 // SessionManager tracks active sessions for connection limiting and cleanup.
 type SessionManager struct {
-	mu       sync.RWMutex
-	sessions map[*ws.Conn]*Session
-	maxConns int
+	mu           sync.RWMutex
+	sessions     map[*ws.Conn]*Session
+	reservations map[*SessionReservation]struct{}
+	maxConns     int
 }
 
 // NewSessionManager creates a new session manager.
 func NewSessionManager(maxConns int) *SessionManager {
 	return &SessionManager{
-		sessions: make(map[*ws.Conn]*Session),
-		maxConns: maxConns,
+		sessions:     make(map[*ws.Conn]*Session),
+		reservations: make(map[*SessionReservation]struct{}),
+		maxConns:     maxConns,
 	}
 }
 
@@ -467,13 +469,47 @@ func (m *SessionManager) Create(clientConn *ws.Conn) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.maxConns > 0 && len(m.sessions) >= m.maxConns {
+	if m.maxConns > 0 && len(m.sessions)+len(m.reservations) >= m.maxConns {
 		return nil, ErrConnectionLimitReached
 	}
 
 	session := NewSession(clientConn)
 	m.sessions[clientConn] = session
 	return session, nil
+}
+
+// SessionReservation counts an in-flight native upstream handshake against the
+// client connection limit. Complete and Release are mutually exclusive.
+type SessionReservation struct{ manager *SessionManager }
+
+func (m *SessionManager) Reserve() (*SessionReservation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.maxConns > 0 && len(m.sessions)+len(m.reservations) >= m.maxConns {
+		return nil, ErrConnectionLimitReached
+	}
+	r := &SessionReservation{manager: m}
+	m.reservations[r] = struct{}{}
+	return r, nil
+}
+
+func (r *SessionReservation) Complete(conn *ws.Conn) (*Session, error) {
+	m := r.manager
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.reservations[r]; !ok {
+		return nil, ErrConnectionLimitReached
+	}
+	delete(m.reservations, r)
+	session := NewSession(conn)
+	m.sessions[conn] = session
+	return session, nil
+}
+
+func (r *SessionReservation) Release() {
+	r.manager.mu.Lock()
+	delete(r.manager.reservations, r)
+	r.manager.mu.Unlock()
 }
 
 // Get returns the session for the given client connection.
@@ -509,6 +545,7 @@ func (m *SessionManager) CloseAll() {
 	m.mu.Lock()
 	sessions := m.sessions
 	m.sessions = make(map[*ws.Conn]*Session)
+	m.reservations = make(map[*SessionReservation]struct{})
 	m.mu.Unlock()
 
 	for _, session := range sessions {

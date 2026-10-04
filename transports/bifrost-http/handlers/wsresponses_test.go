@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -33,6 +34,182 @@ type codexTestHooks struct {
 	cleanup int
 	deny    int
 	t       *testing.T
+}
+
+// 验收: FWD-67-A2~ Real handshake, without company credentials or a paid upstream.
+func TestChatGPTWSHandshakeCookies(t *testing.T) {
+	want := []string{"affinity=one; Path=/; HttpOnly", "affinity=two; Path=/backend-api; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Secure"}
+	closed := make(chan struct{})
+	var dials, messages atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dials.Add(1)
+		conn, err := (&ws.Upgrader{}).Upgrade(w, r, http.Header{"Set-Cookie": want})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer close(closed)
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+			messages.Add(1)
+			_ = conn.WriteMessage(ws.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-test","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`))
+		}
+	}))
+	defer upstream.Close()
+	t.Setenv(integrations.ChatGPTUpstreamEnv, upstream.URL)
+	h := &WSResponsesHandler{sessions: bfws.NewSessionManager(1), handlerStore: testWSHandlerStore{}}
+	hooks := &codexTestHooks{t: t, deny: 3}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) { h.handleChatGPTUpgradeWithHooks(ctx, hooks) }}
+	go server.Serve(listener)
+	defer server.Shutdown()
+	header := http.Header{"Authorization": {"Bearer company.test.token"}, "X-Bf-Vk": {"sk-bf-test"}}
+	conn, resp, err := ws.DefaultDialer.Dial("ws://"+listener.Addr().String()+"/chatgpt_passthrough/backend-api/codex/responses", header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if got := resp.Header.Values("Set-Cookie"); !reflect.DeepEqual(got, want) {
+		t.Errorf("cookies = %q, want %q", got, want)
+	}
+	for i := 0; i < 3; i++ {
+		_ = conn.WriteMessage(ws.TextMessage, []byte(`{"type":"response.create","model":"gpt-5","store":false,"input":[]}`))
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i < 2 && !strings.Contains(string(raw), "response.completed") {
+			t.Fatalf("unexpected response: %s", raw)
+		}
+		if i == 2 && !strings.Contains(string(raw), "quota exhausted") {
+			t.Fatal("quota bypass")
+		}
+	}
+	_ = conn.Close()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Error("upstream not closed after client disconnect")
+	}
+	if dials.Load() != 1 || messages.Load() != 2 {
+		t.Fatalf("dials=%d messages=%d", dials.Load(), messages.Load())
+	}
+}
+
+// 验收: FWD-67-A2~ Failed upstream/upgrade releases the reserved slot and cookies.
+func TestChatGPTWSHandshakeFailureCleanup(t *testing.T) {
+	for _, rejected := range []bool{false, true} {
+		t.Run(fmt.Sprint(rejected), func(t *testing.T) {
+			closed := make(chan struct{})
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !rejected {
+					w.Header().Set("Set-Cookie", "failure=private")
+					w.WriteHeader(401)
+					return
+				}
+				conn, err := (&ws.Upgrader{}).Upgrade(w, r, http.Header{"Set-Cookie": {"success=private"}})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer conn.Close()
+				defer close(closed)
+				_, _, _ = conn.ReadMessage()
+			}))
+			defer upstream.Close()
+			t.Setenv(integrations.ChatGPTUpstreamEnv, upstream.URL)
+			h := &WSResponsesHandler{sessions: bfws.NewSessionManager(1)}
+			if rejected {
+				h.upgrader.CheckOrigin = func(*fasthttp.RequestCtx) bool { return false }
+			}
+			var ctx fasthttp.RequestCtx
+			ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
+			ctx.Request.Header.SetMethod("GET")
+			for key, value := range map[string]string{"Connection": "Upgrade", "Upgrade": "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", "Authorization": "Bearer company.test.token", "X-Bf-Vk": "sk-bf-test"} {
+				ctx.Request.Header.Set(key, value)
+			}
+			h.handleChatGPTUpgrade(&ctx)
+			want := 502
+			if rejected {
+				want = 403
+			}
+			if ctx.Response.StatusCode() != want || len(ctx.Response.Header.Peek("Set-Cookie")) != 0 {
+				t.Fatalf("status=%d cookie leaked=%v", ctx.Response.StatusCode(), len(ctx.Response.Header.Peek("Set-Cookie")) != 0)
+			}
+			r, err := h.sessions.Reserve()
+			if err != nil {
+				t.Fatal("reservation leaked")
+			}
+			r.Release()
+			if rejected {
+				select {
+				case <-closed:
+				case <-time.After(2 * time.Second):
+					t.Fatal("upstream leaked")
+				}
+			}
+		})
+	}
+}
+
+// 验收: FWD-67-A2~ No invented cookies; concurrent handshakes obey admission.
+func TestChatGPTWSHandshakeAdmission(t *testing.T) {
+	var dials atomic.Int32
+	closed := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dials.Add(1)
+		conn, err := (&ws.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		defer close(closed)
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer upstream.Close()
+	t.Setenv(integrations.ChatGPTUpstreamEnv, upstream.URL)
+	h := &WSResponsesHandler{sessions: bfws.NewSessionManager(1)}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &fasthttp.Server{Handler: h.handleChatGPTUpgrade}
+	go server.Serve(listener)
+	defer server.Shutdown()
+	endpoint := "ws://" + listener.Addr().String() + "/chatgpt_passthrough/backend-api/codex/responses"
+	header := http.Header{"Authorization": {"Bearer company.test.token"}, "X-Bf-Vk": {"sk-bf-test"}}
+	conn, resp, err := ws.DefaultDialer.Dial(endpoint, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if len(resp.Header.Values("Set-Cookie")) != 0 {
+		t.Fatal("invented cookie")
+	}
+	second, resp, err := ws.DefaultDialer.Dial(endpoint, header)
+	if second != nil {
+		second.Close()
+	}
+	if err == nil || resp == nil || resp.StatusCode != 429 {
+		t.Fatal("connection limit bypass")
+	}
+	if dials.Load() != 1 {
+		t.Fatal("rejected connection dialed upstream")
+	}
+	conn.Close()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle upstream leaked")
+	}
 }
 
 func (r *codexTestHooks) RunPreRequestHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
