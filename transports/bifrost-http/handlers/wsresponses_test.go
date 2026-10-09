@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"github.com/fasthttp/router"
@@ -34,6 +35,113 @@ type codexTestHooks struct {
 	cleanup int
 	deny    int
 	t       *testing.T
+}
+
+type codexCompressionWireConn struct {
+	net.Conn
+	captured []byte
+}
+
+func (c *codexCompressionWireConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 && len(c.captured) < 65536 {
+		keep := n
+		if keep > 65536-len(c.captured) {
+			keep = 65536 - len(c.captured)
+		}
+		c.captured = append(c.captured, p[:keep]...)
+	}
+	return n, err
+}
+
+// 验收: CXD-R1~ FWD-67-A2~
+func TestChatGPTWSCompressionAndLongMessages(t *testing.T) {
+	for _, offer := range []bool{true, false} {
+		t.Run(fmt.Sprint(offer), func(t *testing.T) {
+			long := strings.Repeat("fake long delta ", 8192)
+			delta := `{"type":"response.output_text.delta","delta":"` + long + `"}`
+			done := `{"type":"response.completed","response":{"id":"resp-compression","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`
+			handshake := make(chan string, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handshake <- r.Header.Get("Sec-WebSocket-Extensions")
+				conn, err := (&ws.Upgrader{EnableCompression: true}).Upgrade(w, r, http.Header{"Set-Cookie": {"fake=one; Path=/", "fake=two; Path=/backend-api"}})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer conn.Close()
+				conn.EnableWriteCompression(true)
+				for {
+					_, raw, err := conn.ReadMessage()
+					if err != nil {
+						return
+					}
+					if !strings.Contains(string(raw), `"model":"gpt-6.1-sol"`) {
+						t.Error("native payload changed")
+					}
+					_ = conn.WriteMessage(ws.TextMessage, []byte(delta))
+					_ = conn.WriteMessage(ws.TextMessage, []byte(done))
+				}
+			}))
+			defer upstream.Close()
+			t.Setenv(integrations.ChatGPTUpstreamEnv, upstream.URL)
+			h := &WSResponsesHandler{sessions: bfws.NewSessionManager(1), handlerStore: testWSHandlerStore{}}
+			hooks := &codexTestHooks{t: t}
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) { h.handleChatGPTUpgradeWithHooks(ctx, hooks) }}
+			go server.Serve(listener)
+			defer server.Shutdown()
+			dialer := ws.Dialer{EnableCompression: offer, HandshakeTimeout: 3 * time.Second}
+			var wire *codexCompressionWireConn
+			dialer.NetDial = func(network, address string) (net.Conn, error) {
+				conn, err := net.DialTimeout(network, address, 3*time.Second)
+				if err != nil {
+					return nil, err
+				}
+				wire = &codexCompressionWireConn{Conn: conn}
+				return wire, nil
+			}
+			conn, resp, err := dialer.Dial("ws://"+listener.Addr().String()+"/chatgpt_passthrough/backend-api/codex/responses", http.Header{"Authorization": {"Bearer fake-company"}, "X-Bf-Vk": {"sk-bf-test"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if ext := resp.Header.Get("Sec-WebSocket-Extensions"); strings.Contains(ext, "permessage-deflate") != offer {
+				t.Errorf("downstream compression offer=%v, negotiated=%q", offer, ext)
+			}
+			if ext := <-handshake; !strings.Contains(ext, "permessage-deflate") {
+				t.Errorf("upstream compression absent: %q", ext)
+			}
+			if len(resp.Header.Values("Set-Cookie")) != 2 {
+				t.Fatal("cookies lost")
+			}
+			conn.EnableWriteCompression(offer)
+			for i := 0; i < 2; i++ {
+				_ = conn.WriteMessage(ws.TextMessage, []byte(`{"type":"response.create","model":"gpt-6.1-sol","store":false,"reasoning":{"effort":"high"},"input":[]}`))
+				_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+				for _, expected := range []string{delta, done} {
+					_, raw, err := conn.ReadMessage()
+					if err != nil || string(raw) != expected {
+						t.Fatal("compressed native message changed or interrupted", err)
+					}
+				}
+			}
+			first := bytes.Index(wire.captured, []byte("\r\n\r\n")) + 4
+			if first < 4 || first >= len(wire.captured) {
+				t.Fatal("wire frame missing")
+			}
+			if compressed := wire.captured[first]&0x40 != 0; compressed != offer {
+				t.Errorf("actual downstream frame RSV1=%v offer=%v", compressed, offer)
+			}
+			t.Logf("offer=%v downstream=%s RSV1=%v recorded_bytes=%d plain_delta_bytes=%d", offer, resp.Header.Get("Sec-WebSocket-Extensions"), wire.captured[first]&0x40 != 0, len(wire.captured), len(long))
+			if offer && len(wire.captured) >= len(long) {
+				t.Fatal("long messages were not compressed on wire")
+			}
+		})
+	}
 }
 
 // 验收: FWD-67-A2~ Real handshake, without company credentials or a paid upstream.

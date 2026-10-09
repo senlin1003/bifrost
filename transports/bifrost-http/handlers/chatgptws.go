@@ -110,7 +110,11 @@ func (h *WSResponsesHandler) handleChatGPTUpgradeWithHooks(ctx *fasthttp.Request
 	for _, cookie := range response.Header.Values("Set-Cookie") {
 		ctx.Response.Header.Add("Set-Cookie", cookie)
 	}
-	err = h.upgrader.Upgrade(ctx, func(conn *ws.Conn) {
+	// Native Codex offers permessage-deflate. Each hop negotiates its own
+	// compression context; never copy the upstream extension response verbatim.
+	upgrader := h.upgrader
+	upgrader.EnableCompression = true
+	err = upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
 		defer upstream.Close()
 		session, err := reservation.Complete(conn)
