@@ -158350,7 +158350,7 @@
     },
     {
       "name": "FWD-67 OpenAI Codex WebSocket upgrade guards",
-      "description": "Pins the dedicated native Codex WebSocket route. Plain HTTP must be rejected as 400 rather than route-not-found. Native multi-turn byte fidelity, per-turn quota and disconnect tests run in TestChatGPTWSMultiTurnRawAndQuota. Set-Cookie wire fidelity, handshake failure cleanup and admission are pinned by TestChatGPTWSHandshakeCookies, TestChatGPTWSHandshakeFailureCleanup and TestChatGPTWSHandshakeAdmission using actual local WS clients; newman cannot exchange WebSocket frames. These HTTP guards consume no provider tokens and do not claim to verify cookies.",
+      "description": "Pins the dedicated native Codex WebSocket route. Plain HTTP must be rejected as 400 rather than route-not-found. Native multi-turn byte fidelity, per-turn quota and disconnect tests run in TestChatGPTWSMultiTurnRawAndQuota. Set-Cookie wire fidelity, handshake failure cleanup and admission are pinned by TestChatGPTWSHandshakeCookies, TestChatGPTWSHandshakeFailureCleanup and TestChatGPTWSHandshakeAdmission using actual local WS clients; Negotiated native compression, actual wire RSV1, long delta preservation, no-offer fallback and repeated Cookie headers are pinned by TestChatGPTWSCompressionAndLongMessages; newman cannot exchange WebSocket frames. These HTTP guards consume no provider tokens and do not claim to verify cookies or compression.",
       "item": [
         {
           "name": "OpenAI Codex WebSocket GET requires upgrade - FWD-67",

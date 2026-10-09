@@ -16,6 +16,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// 验收: CXD-R1~ FWD-67-A2~
+func TestNativeCodexCompressionScope(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"ws://localhost:8098/backend-api/codex/responses":                   true,
+		"wss://chatgpt.com/backend-api/codex/responses?q=1":                 true,
+		"ws://localhost:8098/v1/responses":                                  false,
+		"ws://localhost:8098/v1/realtime?next=/backend-api/codex/responses": false,
+		"ws://localhost:8098/backend-api/codex/responses/other":             false,
+		"ws://localhost/%invalid":                                           false,
+	} {
+		if nativeCodexCompression(raw) != want {
+			t.Errorf("compression scope for %s", raw)
+		}
+	}
+}
+
 // startTestHTTPProxy starts a minimal CONNECT-based forward proxy. Used to prove that a
 // configured HTTP proxy actually sits in the WebSocket dial path (via the CONNECT tunnel),
 // not just that a Dialer.Proxy func was set.

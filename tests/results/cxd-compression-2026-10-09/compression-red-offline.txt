@@ -1,0 +1,13 @@
+=== RUN   TestChatGPTWSCompressionAndLongMessages
+=== RUN   TestChatGPTWSCompressionAndLongMessages/true
+    wsresponses_test.go:77: downstream compression offer=true, negotiated=""
+    wsresponses_test.go:78: upstream compression absent: ""
+    wsresponses_test.go:88: actual downstream frame RSV1=false offer=true
+=== RUN   TestChatGPTWSCompressionAndLongMessages/false
+    wsresponses_test.go:78: upstream compression absent: ""
+--- FAIL: TestChatGPTWSCompressionAndLongMessages (0.11s)
+    --- FAIL: TestChatGPTWSCompressionAndLongMessages/true (0.11s)
+    --- FAIL: TestChatGPTWSCompressionAndLongMessages/false (0.00s)
+FAIL
+FAIL	github.com/maximhq/bifrost/transports/bifrost-http/handlers	1.861s
+FAIL

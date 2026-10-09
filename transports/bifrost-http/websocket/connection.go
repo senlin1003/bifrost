@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -273,11 +274,17 @@ func DialUpstreamWithResponse(url string, headers http.Header, provider schemas.
 // routed through proxyConfig if set (nil/NoProxy dials directly).
 func Dial(url string, headers http.Header, proxyConfig *schemas.ProxyConfig) (*ws.Conn, *http.Response, error) {
 	dialer := &ws.Dialer{
-		HandshakeTimeout: 10 * time.Second,
+		HandshakeTimeout:  10 * time.Second,
+		EnableCompression: nativeCodexCompression(url),
 	}
 	dialer, err := providerUtils.ConfigureWebSocketProxy(dialer, proxyConfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid proxy configuration: %w", err)
 	}
 	return dialer.Dial(url, headers)
+}
+
+func nativeCodexCompression(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Path == "/backend-api/codex/responses"
 }

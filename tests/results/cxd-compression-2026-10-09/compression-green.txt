@@ -1,0 +1,8 @@
+=== RUN   TestChatGPTWSCompressionAndLongMessages
+=== RUN   TestChatGPTWSCompressionAndLongMessages/true
+=== RUN   TestChatGPTWSCompressionAndLongMessages/false
+--- PASS: TestChatGPTWSCompressionAndLongMessages (0.11s)
+    --- PASS: TestChatGPTWSCompressionAndLongMessages/true (0.10s)
+    --- PASS: TestChatGPTWSCompressionAndLongMessages/false (0.00s)
+PASS
+ok  	github.com/maximhq/bifrost/transports/bifrost-http/handlers	1.752s

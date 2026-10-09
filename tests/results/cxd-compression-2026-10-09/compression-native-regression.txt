@@ -1,0 +1,36 @@
+=== RUN   TestChatGPTWSCompressionAndLongMessages
+=== RUN   TestChatGPTWSCompressionAndLongMessages/true
+    wsresponses_test.go:139: offer=true downstream=permessage-deflate; server_no_context_takeover; client_no_context_takeover RSV1=true recorded_bytes=1333 plain_delta_bytes=131072
+=== RUN   TestChatGPTWSCompressionAndLongMessages/false
+    wsresponses_test.go:139: offer=false downstream= RSV1=false recorded_bytes=65536 plain_delta_bytes=131072
+--- PASS: TestChatGPTWSCompressionAndLongMessages (0.12s)
+    --- PASS: TestChatGPTWSCompressionAndLongMessages/true (0.11s)
+    --- PASS: TestChatGPTWSCompressionAndLongMessages/false (0.00s)
+=== RUN   TestChatGPTWSHandshakeCookies
+--- PASS: TestChatGPTWSHandshakeCookies (0.00s)
+=== RUN   TestChatGPTWSHandshakeFailureCleanup
+=== RUN   TestChatGPTWSHandshakeFailureCleanup/false
+=== RUN   TestChatGPTWSHandshakeFailureCleanup/true
+--- PASS: TestChatGPTWSHandshakeFailureCleanup (0.00s)
+    --- PASS: TestChatGPTWSHandshakeFailureCleanup/false (0.00s)
+    --- PASS: TestChatGPTWSHandshakeFailureCleanup/true (0.00s)
+=== RUN   TestChatGPTWSHandshakeAdmission
+--- PASS: TestChatGPTWSHandshakeAdmission (0.00s)
+=== RUN   TestChatGPTWSMultiTurnRawAndQuota
+=== RUN   TestChatGPTWSMultiTurnRawAndQuota/false
+=== RUN   TestChatGPTWSMultiTurnRawAndQuota/true
+--- PASS: TestChatGPTWSMultiTurnRawAndQuota (0.00s)
+    --- PASS: TestChatGPTWSMultiTurnRawAndQuota/false (0.00s)
+    --- PASS: TestChatGPTWSMultiTurnRawAndQuota/true (0.00s)
+=== RUN   TestChatGPTWSTargetRejectsPlaintextRemote
+--- PASS: TestChatGPTWSTargetRejectsPlaintextRemote (0.00s)
+=== RUN   TestChatGPTWSRouteRequiresUpgradeAndCredentials
+--- PASS: TestChatGPTWSRouteRequiresUpgradeAndCredentials (0.00s)
+=== RUN   TestChatGPTWSDisconnectDuringTurnFinalizesHooks
+--- PASS: TestChatGPTWSDisconnectDuringTurnFinalizesHooks (0.00s)
+PASS
+ok  	github.com/maximhq/bifrost/transports/bifrost-http/handlers	2.275s
+=== RUN   TestNativeCodexCompressionScope
+--- PASS: TestNativeCodexCompressionScope (0.00s)
+PASS
+ok  	github.com/maximhq/bifrost/transports/bifrost-http/websocket	1.700s
